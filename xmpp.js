@@ -51,7 +51,7 @@ class NvcsXmppClient {
 	eventList = {
 		VOICECALL: 'VOICECALL',
 		VIDEOCALL: 'VIDEOCALL',
-		KEYEXCHANGE: 'xa',
+		KEYEXCHANGE: 'KEYEXCHANGE',
 		PING: 'PING',
 		ONLINE: 'online',
 		OFFLINE: 'offline',
@@ -90,7 +90,7 @@ class NvcsXmppClient {
 		});
 
 		this.xmpp.on('offline', () => {
-			logger.info('offline');
+			this.offline();
 		});
 
 		this.xmpp.on('stanza', async (stanza) => {
@@ -334,6 +334,18 @@ class NvcsXmppClient {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 *  Unavailable Presence
+	 * become unavailable by sending "unavailable presence"
+	 * @param {jid} jid
+	 */
+	async offline() {
+		logger.debug('send unavailable request');
+		const stanza = xml('presence', { type: 'unavailable' });
+
+		return await this.sendStanza(stanza);
 	}
 
 	/**
