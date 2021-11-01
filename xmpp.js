@@ -16,16 +16,22 @@
  * 2021-10-15     Abdulrahman Alosaimi      the first version
  */
 
-const { client, xml } = require('@xmpp/client');
-const debug = require('@xmpp/debug');
 
 const events = require('events');
-const logger = require('pino')();
+const { client, xml } = require('@xmpp/client');
+const jid = require("@xmpp/jid");
+const debug = require('@xmpp/debug');
+const pino = require('pino');
+const logger = pino({
+	transport: {
+		target: 'pino-pretty', options: {
+			colorize: true
+		}
+	},
+});
+
 
 const eventEmitter = new events.EventEmitter();
-
-// Insecure!
-// process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 var STATUS = {
 	AWAY: 'away',
@@ -43,12 +49,24 @@ function parseItem(item) {
 		name: item.attrs.name || '',
 		subscription: item.attrs.subscription || 'none',
 		jid: item.attrs.jid || '',
+		show: STATUS.ONLINE,
+		status: ''
 	});
+}
+
+
+function parseVcard({ children }) {
+	return children.reduce((dict, c) => {
+		dict[c.name] =
+			c.children && typeof c.children[0] === 'string' ? c.text() : parseVcard(c)
+		return dict
+	}, {})
 }
 
 class NvcsXmppClient {
 	// publicField
 	eventList = {
+		CONTACT_STATUS_CHANGED: 'CONTACT_STATUS_CHANGED',
 		VOICECALL: 'VOICECALL',
 		VIDEOCALL: 'VIDEOCALL',
 		KEYEXCHANGE: 'KEYEXCHANGE',
@@ -62,7 +80,7 @@ class NvcsXmppClient {
 	#username;
 	#password;
 
-	contacts = {};
+	contacts = [];
 
 	constructor(service, username, password) {
 		this.#service = 'xmpps://xmpp.jp:5223';
@@ -73,20 +91,22 @@ class NvcsXmppClient {
 			service: this.#service,
 			username: this.#username,
 			password: this.#password,
-			resource: 'nvcsClient',
+			resource: 'nvcsClientOffice',
 		});
 
 		this.xmpp.on('online', async (address) => {
-			this.currentUser = address;
+			this.currentUser = address.toString();
 			logger.info(`online as ${address.toString()}`);
 
+			await this.getRoster();
 			// Makes itself available
 			await this.xmpp.send(xml('presence'));
 		});
 
 		this.xmpp.on('error', (err) => {
+			//TODO: "message": "conflict - Replaced by new connection",
 			logger.debug('error accoured !');
-			logger.error(err);
+			//	logger.error(err.message);
 		});
 
 		this.xmpp.on('offline', () => {
@@ -119,51 +139,66 @@ class NvcsXmppClient {
 	}
 
 	/**
-	 *  The 'type' attribute of a presence stanza is OPTIONAL , the 'type' attribute MUST have one of the following values:
-	 *  probe -- A request for an entity's current presence; SHOULD be generated only by a server on behalf of a user.
-	 *  error -- An error has occurred regarding processing or delivery of a previously-sent presence stanza.
+	 *  The 'type' attribute of a presence stanza is OPTIONAL
 	 * @param {stanza} stanza
 	 * @returns
 	 */
 	async presenceHandel(stanza) {
-		if (stanza.attrs.type == null) {
-			logger.trace(stanza.toString());
-			return;
-		}
+
+		if (stanza.attrs.to == this.currentUser)
+			logger.debug("<==== incoming");
+		else
+			logger.debug("====> outgoing");
 
 		switch (stanza.attrs.type) {
 			case 'subscribe':
 				logger.info(
-					"subscribe -- The sender wishes to subscribe to the recipient's presence.",
+					'subscribe -- The ' + stanza.attrs.from + ' wishes to subscribe to the recipient\'s presence.',
 				);
 				this.acceptSubscription(stanza.attrs.from);
 				break;
 			case 'unsubscribe':
 				logger.info(
-					"unsubscribe -- The sender is unsubscribing from another entity's presence.",
+					'unsubscribe -- The ' + stanza.attrs.from + ' is unsubscribing from another entity\'s presence.',
 				);
 				this.cancelSubscription(stanza.attrs.from);
 				break;
 			case 'subscribed':
 				logger.info(
-					'subscribed -- The sender has allowed the recipient to receive their presence.',
+					'subscribed -- The +stanza.attrs.from+ has allowed the recipient to receive their presence.',
 				);
 				break;
 			case 'unsubscribed':
 				logger.info(
-					'unsubscribed -- The subscription request has been denied or a previously-granted subscription has been cancelled.',
+					'unsubscribed -- The ' + stanza.attrs.from + ' subscription request has been denied or a previously-granted subscription has been cancelled.',
 				);
 				this.cancelSubscription(stanza.attrs.from);
 				break;
 			case 'unavailable':
 				logger.info(
-					'unavailable -- Signals that the entity is no longer available for communication.',
+					'unavailable -- The ' + stanza.attrs.from + ' signals that the entity is no longer available for communication.',
+				);
+				//TODO: set contact's show offline
+				eventEmitter.emit(this.eventList.CONTACT_STATUS_CHANGED);
+				break;
+			case 'probe':
+				logger.info(
+					'probe -- A request for an entity\'s current presence; SHOULD be generated only by a server on behalf of a user.',
+				);
+				this.cancelSubscription(stanza.attrs.from);
+				break;
+			case 'error':
+				logger.info(
+					'error -- An error has occurred regarding processing or delivery of a previously-sent presence stanza.',
 				);
 				break;
 			default:
-				logger.warn('unkown stanza.attrs.type' + stanza.attrs.type);
+				// A presence stanza that does not possess a 'type' attribute is used to signal to the server that the sender is online and available for communication
+				this.presenceVcardUpdate(stanza);
 				break;
 		}
+
+		// 
 	}
 
 	async messageHandle(stanza) {
@@ -181,13 +216,13 @@ class NvcsXmppClient {
 				await this.sendMessage(from, 'ping');
 				break;
 			case this.eventList.VIDEOCALL:
-				await eventEmitter.emit(this.eventList.VIDEOCALL);
+				eventEmitter.emit(this.eventList.VIDEOCALL);
 				break;
 			case this.eventList.VOICECALL:
-				await eventEmitter.emit(this.eventList.VOICECALL);
+				eventEmitter.emit(this.eventList.VOICECALL);
 				break;
 			case this.eventList.KEYEXCHANGE:
-				await eventEmitter.emit(this.eventList.KEYEXCHANGE);
+				eventEmitter.emit(this.eventList.KEYEXCHANGE);
 				break;
 			default:
 				logger.info(`received message "${messageText}" from "${from}"`);
@@ -217,6 +252,7 @@ class NvcsXmppClient {
 	 * @returns
 	 */
 	async getRoster(subscription) {
+
 		const req = xml('query', 'jabber:iq:roster');
 
 		logger.debug(req.toString());
@@ -234,19 +270,8 @@ class NvcsXmppClient {
 		}
 
 		this.contacts = this.contacts.map((x) => parseItem(x));
+		eventEmitter.emit(this.eventList.CONTACT_STATUS_CHANGED);
 		return true;
-	}
-
-	getVCard(jid) {
-		logger.info(`****** getVCard for ${jid}`);
-		this.sendStanza(
-			xml(
-				'iq',
-				{ from: this.currentUser, to: jid, type: 'get', id: 'v3' },
-				xml('vCard', { xmlns: 'vcard-temp' }, null),
-			),
-		);
-		logger.info(`****** getVCard for ${jid}`);
 	}
 
 	/**
@@ -256,9 +281,10 @@ class NvcsXmppClient {
 	 * @returns {Promise<void>} Completion promise
 	 */
 	async removeItem(jid) {
+
 		if (!this.isInRoster(jid)) {
-			logger.error(`The JID ${jid} isn't in contats`);
-			return false;
+			logger.warn(`The JID ${jid} isn't in contats`);
+			//return false;
 		}
 
 		const req = xml(
@@ -279,6 +305,42 @@ class NvcsXmppClient {
 
 		return false;
 	}
+
+
+	presenceVcardUpdate(presence) {
+
+		//logger.trace(presence.toString());
+
+		let from = presence.attrs.from.split('/')[0]; // remove resoure value
+
+		if (from == this.currentUser.split('/')[0]) {
+			logger.debug('self presence !');
+			return;
+		}
+
+		for (const c of this.contacts) {
+			if (c.jid == from) {
+
+				logger.info(c.jid + " presence update !");
+
+				if (presence.getChild('show') != null)
+					c.show = presence.getChild('show').text();
+				else
+					c.show = STATUS.ONLINE
+
+				if (presence.getChild('status') != null)
+					c.status = presence.getChild('status').text();
+				else
+					c.status = '';
+				eventEmitter.emit(this.eventList.CONTACT_STATUS_CHANGED);
+				return;
+			}
+		}
+
+		logger.error({ contact: this.contacts }, from + " not found");
+
+	}
+
 
 	async getRosterPresence(JID) {
 		logger.debug('getRoster start ' + JID);
@@ -327,12 +389,21 @@ class NvcsXmppClient {
 	}
 
 	isInRoster(jid) {
+
+		if (this.contacts.length < 1) {
+			logger.error('Your contacts is empity ');
+			return false;
+		}
+
 		for (const element of this.contacts) {
 			if (element.jid == jid) {
 				console.log(element.jid + '==' + jid);
 				return true;
 			}
 		}
+
+		logger.error({ contact: this.contacts }, jid + " not found");
+
 		return false;
 	}
 
@@ -354,9 +425,11 @@ class NvcsXmppClient {
 	 * @param {jid} jid
 	 */
 	async subscribe(jid) {
+
+
 		if (this.isInRoster(jid)) {
-			logger.error(`The JID ${jid} is already exsit in contats`);
-			return false;
+			logger.warn(`The JID ${jid} is already exsit in contacts`);
+			//	return false;
 		}
 
 		logger.debug('send subscribe request to ' + jid);
@@ -372,10 +445,12 @@ class NvcsXmppClient {
 	 * @param {jid} jid
 	 */
 	async unsubscribe(jid) {
+
 		if (!this.isInRoster(jid)) {
-			logger.error(`The JID ${jid} isn't in contats`);
+			logger.error(`The JID ${jid} isn't in contats to unsubscribe`);
 			return false;
 		}
+
 		const stanza = xml('presence', { to: jid, type: 'unsubscribe' });
 		logger.debug('send unsubscribe request to ' + jid);
 
@@ -418,10 +493,46 @@ class NvcsXmppClient {
 	 * @param {jid} jid
 	 */
 	async cancelSubscription(jid) {
+
 		const stanza = xml('presence', { to: jid, type: 'unsubscribed' });
 
 		logger.debug('cancel subscription from ' + jid);
 		await this.sendStanza(stanza);
+	}
+
+
+	/* vCard Section  */
+
+	/**
+	 * Retrieving One's vCard
+	 * @param {jid} jid 
+	 * @returns {IQ-result | error | null}
+	 */
+	async getVCard(jid) {
+
+		try {
+			logger.info(`****** getVCard for ${jid}`);
+			let para = {}
+			if (!jid) {
+				para = {
+					from: this.currentUser, type: 'get', id: 'v1'
+				}
+			}
+			else {
+				para = {
+					to: jid, type: 'get', id: 'v3'
+				}
+			}
+
+			const req = xml('iq', para, xml('vCard', { xmlns: 'vcard-temp' }, null));
+
+			logger.info(req.toString())
+			await this.sendStanza(req);
+			logger.info(`****** getVCard for ${jid}`);
+		} catch (error) {
+			logger.error(error)
+		}
+
 	}
 
 	async connect() {

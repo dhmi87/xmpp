@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "nodemon index.js --trace-warnings | pino-pretty",
+    "start": "clear && nodemon index.js --trace-warnings",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -13,7 +13,9 @@
   "dependencies": {
     "@xmpp-plugins/roster": "^1.2.0",
     "@xmpp/client": "^0.13.0",
-    "@xmpp/debug": "^0.13.0"
+    "@xmpp/debug": "^0.13.0",
+    "@xmpp/jid": "^0.13.0",
+    "pino-pretty": "^7.1.0"
   },
   "devDependencies": {
     "pino": "^7.0.2"
