@@ -32,7 +32,7 @@ function print(contacts) {
 }
 
 function refresh(params) {
-	console.log("contacts");
+	console.log('contacts');
 	console.log(a.contacts);
 }
 
@@ -43,11 +43,10 @@ async function doconn() {
 		};
 
 		a.addEventListener(a.eventList.VIDEOCALL, joinCallEventHandler);
-		a.addEventListener(a.eventList.CONTACT_STATUS_CHANGED, refresh)
+		a.addEventListener(a.eventList.CONTACT_STATUS_CHANGED, refresh);
 		await a.connect();
-		await a.subscribe("ahmed.alqarni@xmpp.jp");
 
-		// logger.info(await a.getVCard("ah.osaimi@xmpp.jp"));
+		//logger.info(await a.getVCard('ah.osaimi@xmpp.jp'));
 	} catch (error) {
 		console.log(error);
 	}
