@@ -7,13 +7,17 @@
  * Event handel
  *
  * TODO:
- * Get resort and status
  * Send & receive invitations
- * events handling
+ * Retrieves Block List & update contact list
+ * enchance iq request with iqCaller promise
  *
  * Change Logs:
  * Date           Author                    Notes
  * 2021-10-15     Abdulrahman Alosaimi      the first version
+ * 2021-10-20     Abdulrahman Alosaimi      implements rotser
+ * 2021-10-25     Abdulrahman Alosaimi      add events handler
+ * 2021-10-25     Abdulrahman Alosaimi      add events handler
+ * 2021-11-2      Abdulrahman Alosaimi      blocking/unblockin contact
  */
 
 const events = require('events');
@@ -34,8 +38,8 @@ const eventEmitter = new events.EventEmitter();
 
 var STATUS = {
 	AWAY: 'away',
-	DND: 'dnd',
-	XA: 'xa',
+	DND: 'busy',
+	XA: 'away for long',
 	ONLINE: 'online',
 	OFFLINE: 'offline',
 };
@@ -130,10 +134,9 @@ class NvcsXmppClient {
 				this.presenceHandel(stanza);
 			} else if (stanza.is('iq')) {
 				this.iqHandel(stanza);
+			} else {
+				logger.warn('unknown stanza:' + stanza.toString());
 			}
-			// else {
-			//     logger.warn("unknown stanza:" + stanza.toString());
-			// }
 		});
 	}
 
@@ -190,7 +193,7 @@ class NvcsXmppClient {
 						' signals that the entity is no longer available for communication.',
 				);
 				this.setContactAvailability(bareJID(stanza.attrs.from), STATUS.OFFLINE);
-				eventEmitter.emit(this.eventList.CONTACT_STATUS_CHANGED);
+				eventEmitter.emit(this.eventList.CONTACT_STATUS_CHANGED, this.contacts);
 				break;
 			case 'probe':
 				logger.info(
@@ -213,21 +216,42 @@ class NvcsXmppClient {
 	}
 
 	async messageHandle(stanza) {
+		const { from } = stanza.attrs;
+
 		if (!stanza.getChild('body')) {
-			logger.warn('body is empity');
-			logger.warn(stanza.toString());
+			logger.debug(`[${from}] is change chat state`);
+			// logger.warn(stanza.toString());
+			/** TODO: Dealing with Chat State Notifications XEP-0085
+			 *  Chat states describe your involvement with a conversation, which can be one of the following:
+			 *	Starting
+			 *	Someone started a conversation, but you haven’t joined in yet.
+			 *
+			 *	Active
+			 *	You are actively involved in the conversation. You’re currently not composing any message, but you are paying close attention.
+			 *
+			 *	Composing
+			 *	You are actively composing a message.
+			 *
+			 *	Paused
+			 *	You started composing a message, but stopped composing for some reason.
+			 *
+			 *	Inactive
+			 *	You haven’t contributed to the conversation for some period of time.
+			 *
+			 *	Gone
+			 *	Your involvement with the conversation has effectively ended (e.g., you have closed the chat window).
+			 */
 			return;
 		}
 
 		const messageText = stanza.getChild('body').text();
-		const { from } = stanza.attrs;
 
 		switch (messageText) {
 			case this.eventList.PING:
 				await this.sendMessage(from, 'ping');
 				break;
 			case this.eventList.VIDEOCALL:
-				eventEmitter.emit(this.eventList.VIDEOCALL);
+				eventEmitter.emit(this.eventList.VIDEOCALL, messageText);
 				break;
 			case this.eventList.VOICECALL:
 				eventEmitter.emit(this.eventList.VOICECALL);
@@ -236,7 +260,7 @@ class NvcsXmppClient {
 				eventEmitter.emit(this.eventList.KEYEXCHANGE);
 				break;
 			default:
-				logger.info(`received message "${messageText}" from "${from}"`);
+				logger.info(`[${from}]: "${messageText}"`);
 				break;
 		}
 	}
@@ -261,23 +285,20 @@ class NvcsXmppClient {
 	 *  none:
 	 *  the user does not have a subscription to the contact's presence, and the contact does not have a subscription to the user's presence; this is the default value, so if the subscription attribute is not included then the state is to be understood as "none"
 	 *  to:
-	 *  the user has a subscription to the contact's presence, but the contact does not have a subscription to the user's presence
+	 *  the user has a subscription to the contact's presence,
+	 *  but the contact does not have a subscription to the user's presence
 	 *  from:
 	 *  the contact has a subscription to the user's presence, but the user does not have a subscription to the contact's presence
 	 *  both:
 	 *  the user and the contact have subscriptions to each other's presence (also called a "mutual subscription")
-	 * @param {*} subscription
+	 * @param {both| to | from | none} subscription
 	 * @returns
 	 */
 	async getRoster(subscription) {
 		logger.info('Getting contatc list ...');
 		const req = xml('query', 'jabber:iq:roster');
 
-		// logger.debug(req.toString());
-
 		const res = await this.xmpp.iqCaller.get(req);
-
-		// logger.debug(res.toString());
 
 		if (subscription) {
 			this.contacts = res
@@ -290,8 +311,75 @@ class NvcsXmppClient {
 		logger.info('Update contatc list ...');
 		this.contacts = this.contacts.map((x) => parseItem(x));
 
-		eventEmitter.emit(this.eventList.CONTACT_STATUS_CHANGED);
+		eventEmitter.emit(this.eventList.CONTACT_STATUS_CHANGED, this.contacts);
 		return true;
+	}
+
+	/**
+	 * Blocking jid XEP-0191 .
+	 *
+	 * @param {string} jid Jabber id for item to block
+	 * @returns {Promise<void>} Completion promise
+	 * <iq from="you@yourdomain.tld/newjob" id="yu4er81v" to="you@yourdomain.tld" type="set">
+	 *  <block xmlns="urn:xmpp:blocking">
+	 *   <item jid="user@domain.com"/>
+	 *  </block>
+	 * </iq>
+	 */
+	async blockContact(jid) {
+		logger.info(`Block ${jid}`);
+		if (this.findUserInContacts(jid) == null || jid == '') {
+			logger.error(`The JID ${jid} isn't in contats`);
+			return false;
+		}
+
+		const response = await this.xmpp.iqCaller.request(
+			xml(
+				'iq',
+				{ from: this.currentUser, type: 'set', id: 'block1' },
+				xml('block', { xmlns: 'urn:xmpp:blocking' }, xml('item', { jid: jid })),
+			),
+			30 * 1000, // 30 seconds timeout - default
+		);
+
+		logger.info(response.toString());
+
+		if (response) {
+			logger.info(`The ${jid} was blocked`);
+			return response;
+		}
+		return false;
+	}
+
+	async unBlockContact(jid) {
+		logger.info(`unblock ${jid}`);
+
+		if (this.findUserInContacts(jid) == null || jid == '') {
+			logger.error(`The JID ${jid} isn't in contats`);
+			return false;
+		}
+
+		const response = await this.xmpp.iqCaller.request(
+			xml(
+				'iq',
+				{ from: this.currentUser, type: 'set', id: 'block1' },
+				xml(
+					'unblock',
+					{ xmlns: 'urn:xmpp:blocking' },
+					xml('item', { jid: jid }),
+				),
+			),
+			30 * 1000, // 30 seconds timeout - default
+		);
+
+		logger.info(response.toString());
+
+		if (response) {
+			logger.info(`The ${jid} was unblocked`);
+			return response;
+		}
+
+		return false;
 	}
 
 	/**
@@ -300,10 +388,10 @@ class NvcsXmppClient {
 	 * @param {string} jid Jabber id for item to remove from the roster
 	 * @returns {Promise<void>} Completion promise
 	 */
-	async removeItem(jid) {
-		if (!this.isInRoster(jid)) {
-			logger.warn(`The JID ${jid} isn't in contats`);
-			//return false;
+	async removeContact(jid) {
+		if (this.findUserInContacts(jid) == null || jid == '') {
+			logger.error(`The JID ${jid} isn't in contats`);
+			return false;
 		}
 
 		const req = xml(
@@ -356,7 +444,7 @@ class NvcsXmppClient {
 				if (presence.getChild('status') != null)
 					c.status = presence.getChild('status').text();
 
-				eventEmitter.emit(this.eventList.CONTACT_STATUS_CHANGED);
+				eventEmitter.emit(this.eventList.CONTACT_STATUS_CHANGED, this.contacts);
 				return;
 			}
 		}
@@ -385,7 +473,7 @@ class NvcsXmppClient {
 
 	// Sends a santaza
 	async sendStanza(stanza) {
-		logger.debug(`sending stanza to ${stanza.toString()}`);
+		logger.info(`sending stanza to ${stanza.toString()}`);
 
 		try {
 			await this.xmpp.send(stanza);
@@ -486,39 +574,33 @@ class NvcsXmppClient {
 		await this.sendStanza(stanza);
 	}
 
-	/*********** vCard Section  ***********/
+	/*********** vCard Section XEP-0054: vcard-temp ***********/
 
 	/**
-	 * Retrieving One's vCard
-	 * @param {jid} jid
+	 * Retrieving vCard by sending an IQ-get,
+	 * @param {jid | null} jid with null user will retrieves his or her own vCard
 	 * @returns {IQ-result | error | null}
 	 */
 	async getVCard(jid) {
-		try {
-			logger.info(`****** getVCard for ${jid}`);
-			let para = {};
-			if (!jid) {
-				para = {
-					from: this.currentUser,
-					type: 'get',
-					id: 'v1',
-				};
-			} else {
-				para = {
-					to: jid,
-					type: 'get',
-					id: 'v3',
-				};
-			}
-
-			const req = xml('iq', para, xml('vCard', { xmlns: 'vcard-temp' }, null));
-
-			logger.info(req.toString());
-			await this.sendStanza(req);
-			logger.info(`****** getVCard for ${jid}`);
-		} catch (error) {
-			logger.error(error);
+		logger.info(`Getting VCard for ${jid} ...`);
+		let para = {};
+		if (!jid) {
+			para = {
+				from: this.currentUser,
+				type: 'get',
+				id: 'v1',
+			};
+		} else {
+			para = {
+				to: jid,
+				type: 'get',
+				id: 'v3',
+			};
 		}
+
+		const req = xml('iq', para, xml('vCard', { xmlns: 'vcard-temp' }, null));
+
+		await this.sendStanza(req);
 	}
 
 	/*********** Message Section  ***********/
