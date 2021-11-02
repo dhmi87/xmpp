@@ -10,6 +10,7 @@
  * Send & receive invitations
  * Retrieves Block List & update contact list
  * enchance iq request with iqCaller promise
+ * Advanced Message Processing XEP-0079 (message expiration, preventing messages from being stored offline)
  *
  * Change Logs:
  * Date           Author                    Notes
@@ -215,6 +216,10 @@ class NvcsXmppClient {
 		//
 	}
 
+	/**
+	 * @param {*} stanza
+	 * @returns
+	 */
 	async messageHandle(stanza) {
 		const { from } = stanza.attrs;
 
@@ -605,7 +610,26 @@ class NvcsXmppClient {
 
 	/*********** Message Section  ***********/
 
-	// Sends a chat message
+	/**
+	 * Sends a chat message
+	 * @param {*} to
+	 * @param {*} body
+	 *
+	 * normal
+	 * This message type is delivered immediately or stored offline by the server, and handled by the client as a “standalone” message outside of any chat or groupchat session. This is the default message type.
+	 *
+	 * chat
+	 * Messages of type chat are sent within a burst of messages called a “chat session,” usually over a relatively short period of time. Instant messaging clients show such messages in a one-to-one conversation interface for the two parties.
+	 *
+	 * groupchat
+	 * XMPP servers usually route messages of type groupchat to a specialized component or module that hosts multi-user chat rooms, and this component then generates one outbound message for each of the room occupants. (We discuss groupchat messages in Chapter 7.)
+	 *
+	 * headline
+	 * Headline messages usually are not stored offline, because they are temporal in nature. In addition, XMPP servers often send a message of type headline to all of the online devices associated with an account (at least those with non-negative <priority/> values).
+	 *
+	 * error
+	 * A message of type error is sent in response to a previously sent message, to indicate that a problem occurred in relation to the earlier message (the recipient does not exist, message delivery is not possible at the moment, etc.).
+	 */
 	async sendMessage(to, body) {
 		logger.debug(`sending message to ${to} : ${body}`);
 
