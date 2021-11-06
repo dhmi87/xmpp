@@ -38,7 +38,7 @@ removeContact(user@serveer.com)
 
 ## Example
 
-```
+```js
 'use strict';
 
 const { client, eventList } = require('./xmpp');
