@@ -7,7 +7,6 @@
  * Event handel
  *
  * TODO:
- * Send & receive invitations
  * Retrieves Block List & update contact list
  * enchance iq request with iqCaller promise
  * Advanced Message Processing XEP-0079 (message expiration, preventing messages from being stored offline)
@@ -19,6 +18,7 @@
  * 2021-10-25     Abdulrahman Alosaimi      add events handler
  * 2021-10-25     Abdulrahman Alosaimi      add events handler
  * 2021-11-2      Abdulrahman Alosaimi      blocking/unblockin contact
+ * 2021-11-5      Abdulrahman Alosaimi      Send & receive invitations
  */
 
 const events = require('events');
@@ -69,6 +69,16 @@ function parseVcard({ children }) {
 	}, {});
 }
 
+const eventList = {
+	CONTACT_STATUS_CHANGED: 'CONTACT_STATUS_CHANGED',
+	VOICECALL: 'VOICECALL',
+	VIDEOCALL: 'VIDEOCALL',
+	KEYEXCHANGE: 'KEYEXCHANGE',
+	PING: 'PING',
+	ONLINE: 'online',
+	OFFLINE: 'offline',
+};
+
 function bareJID(jid) {
 	return jid.split('/')[0];
 }
@@ -117,7 +127,7 @@ class NvcsXmppClient {
 
 		this.xmpp.on('stanza', async (stanza) => {
 			if (stanza == null || stanza === undefined) {
-				logger.error('==============undefined stanza=============');
+				logger.error('undefined stanza');
 				return;
 			}
 
@@ -133,18 +143,8 @@ class NvcsXmppClient {
 		});
 	}
 
-	eventList = {
-		CONTACT_STATUS_CHANGED: 'CONTACT_STATUS_CHANGED',
-		VOICECALL: 'VOICECALL',
-		VIDEOCALL: 'VIDEOCALL',
-		KEYEXCHANGE: 'KEYEXCHANGE',
-		PING: 'PING',
-		ONLINE: 'online',
-		OFFLINE: 'offline',
-	};
-
 	async iqHandel(stanza) {
-		logger.warn(`received iq from ${stanza.attrs.from}`);
+		logger.debug(`received iq from ${stanza.attrs.from}`);
 
 		logger.trace(stanza.toString());
 	}
@@ -196,7 +196,7 @@ class NvcsXmppClient {
 						' signals that the entity is no longer available for communication.',
 				);
 				this.setContactAvailability(bareJID(stanza.attrs.from), STATUS.OFFLINE);
-				eventEmitter.emit(this.eventList.CONTACT_STATUS_CHANGED, this.contacts);
+				eventEmitter.emit(eventList.CONTACT_STATUS_CHANGED, this.contacts);
 				break;
 			case 'probe':
 				logger.info(
@@ -228,27 +228,6 @@ class NvcsXmppClient {
 
 		if (!stanza.getChild('body')) {
 			logger.debug(`[${from}] is change chat state`);
-
-			/** TODO: Dealing with Chat State Notifications XEP-0085
-			 *  Chat states describe your involvement with a conversation, which can be one of the following:
-			 *	Starting
-			 *	Someone started a conversation, but you haven’t joined in yet.
-			 *
-			 *	Active
-			 *	You are actively involved in the conversation. You’re currently not composing any message, but you are paying close attention.
-			 *
-			 *	Composing
-			 *	You are actively composing a message.
-			 *
-			 *	Paused
-			 *	You started composing a message, but stopped composing for some reason.
-			 *
-			 *	Inactive
-			 *	You haven’t contributed to the conversation for some period of time.
-			 *
-			 *	Gone
-			 *	Your involvement with the conversation has effectively ended (e.g., you have closed the chat window).
-			 */
 			return;
 		}
 
@@ -256,21 +235,19 @@ class NvcsXmppClient {
 		// We are using subject element as message type
 		if (stanza.getChild('subject')) {
 			const subject = stanza.getChild('subject').text();
+
 			switch (subject) {
-				case this.eventList.PING:
+				case eventList.PING:
 					await this.sendMessage(from, 'ping');
 					break;
-				case this.eventList.VIDEOCALL:
-					eventEmitter.emit(this.eventList.VIDEOCALL, JSON.parse(messageText));
+				case eventList.VIDEOCALL:
+					eventEmitter.emit(eventList.VIDEOCALL, JSON.parse(messageText));
 					break;
-				case this.eventList.VOICECALL:
-					eventEmitter.emit(this.eventList.VOICECALL, JSON.parse(messageText));
+				case eventList.VOICECALL:
+					eventEmitter.emit(eventList.VOICECALL, JSON.parse(messageText));
 					break;
-				case this.eventList.KEYEXCHANGE:
-					eventEmitter.emit(
-						this.eventList.KEYEXCHANGE,
-						JSON.parse(messageText),
-					);
+				case eventList.KEYEXCHANGE:
+					eventEmitter.emit(eventList.KEYEXCHANGE, JSON.parse(messageText));
 					break;
 				default:
 					logger.info(`[${from}]: unknown subject type "${subject}"`);
@@ -282,10 +259,20 @@ class NvcsXmppClient {
 		logger.info(`[chat][${from}]: "${messageText}"`);
 	}
 
+	/**
+	 *
+	 * @param {evnt} eventName evnet name
+	 * @param {*} callback callback function
+	 */
 	addEventListener(eventName, callback) {
 		eventEmitter.on(eventName, callback);
 	}
 
+	/**
+	 *
+	 * @param {full} xmppDebug  to dispaly all logs traffic
+	 * @param {trace} trace to see some function logs
+	 */
 	activeDebug(xmppDebug, trace) {
 		debug(this.xmpp, xmppDebug);
 		if (trace) logger.level = 'trace';
@@ -299,15 +286,6 @@ class NvcsXmppClient {
 	}
 
 	/**
-	 *  none:
-	 *  the user does not have a subscription to the contact's presence, and the contact does not have a subscription to the user's presence; this is the default value, so if the subscription attribute is not included then the state is to be understood as "none"
-	 *  to:
-	 *  the user has a subscription to the contact's presence,
-	 *  but the contact does not have a subscription to the user's presence
-	 *  from:
-	 *  the contact has a subscription to the user's presence, but the user does not have a subscription to the contact's presence
-	 *  both:
-	 *  the user and the contact have subscriptions to each other's presence (also called a "mutual subscription")
 	 * @param {both| to | from | none} subscription
 	 * @returns
 	 */
@@ -328,7 +306,7 @@ class NvcsXmppClient {
 		logger.info('Update contatc list ...');
 		this.contacts = this.contacts.map((x) => parseItem(x));
 
-		eventEmitter.emit(this.eventList.CONTACT_STATUS_CHANGED, this.contacts);
+		eventEmitter.emit(eventList.CONTACT_STATUS_CHANGED, this.contacts);
 		return true;
 	}
 
@@ -337,11 +315,6 @@ class NvcsXmppClient {
 	 *
 	 * @param {string} jid Jabber id for item to block
 	 * @returns {Promise<void>} Completion promise
-	 * <iq from="you@yourdomain.tld/newjob" id="yu4er81v" to="you@yourdomain.tld" type="set">
-	 *  <block xmlns="urn:xmpp:blocking">
-	 *   <item jid="user@domain.com"/>
-	 *  </block>
-	 * </iq>
 	 */
 	async blockContact(jid) {
 		logger.info(`Block ${jid}`);
@@ -359,7 +332,7 @@ class NvcsXmppClient {
 			30 * 1000, // 30 seconds timeout - default
 		);
 
-		logger.info(response.toString());
+		logger.debug(response.toString());
 
 		if (response) {
 			logger.info(`The ${jid} was blocked`);
@@ -389,7 +362,7 @@ class NvcsXmppClient {
 			30 * 1000, // 30 seconds timeout - default
 		);
 
-		logger.info(response.toString());
+		logger.debug(response.toString());
 
 		if (response) {
 			logger.info(`The ${jid} was unblocked`);
@@ -461,7 +434,7 @@ class NvcsXmppClient {
 				if (presence.getChild('status') != null)
 					c.status = presence.getChild('status').text();
 
-				eventEmitter.emit(this.eventList.CONTACT_STATUS_CHANGED, this.contacts);
+				eventEmitter.emit(eventList.CONTACT_STATUS_CHANGED, this.contacts);
 				return;
 			}
 		}
@@ -622,13 +595,26 @@ class NvcsXmppClient {
 
 	/*********** Message Section  ***********/
 
+	/**
+	 *
+	 * @param {To} to jid to send invite to him
+	 * @param {*} body invitation parameters
+	 */
+	async sendVideoCallInvite(to, body) {
+		this.SendInvite(to, eventList.VIDEOCALL, body);
+	}
+
+	/**
+	 *
+	 * @param {To} to jid to send invite to him
+	 * @param {*} body invitation parameters
+	 */
+	async sendVioceCallInvite(to, body) {
+		this.SendInvite(to, eventList.VOICECALL, body);
+	}
+
 	async SendInvite(to, type, body) {
-		// let invType = this.eventList.type;
-
-		// if (!invType) {
-		// 	throw new Error('type is not defined ' + type);
-		// }
-
+		body.datetime = Date.now();
 		body = JSON.stringify(body);
 		logger.debug(`sending an invitation to ${to} : ${body}`);
 
@@ -641,24 +627,9 @@ class NvcsXmppClient {
 		await this.xmpp.send(msg);
 	}
 	/**
-	 * Sends a chat message
-	 * @param {*} to
-	 * @param {*} body
-	 *
-	 * normal
-	 * This message type is delivered immediately or stored offline by the server, and handled by the client as a “standalone” message outside of any chat or groupchat session. This is the default message type.
-	 *
-	 * chat
-	 * Messages of type chat are sent within a burst of messages called a “chat session,” usually over a relatively short period of time. Instant messaging clients show such messages in a one-to-one conversation interface for the two parties.
-	 *
-	 * groupchat
-	 * XMPP servers usually route messages of type groupchat to a specialized component or module that hosts multi-user chat rooms, and this component then generates one outbound message for each of the room occupants. (We discuss groupchat messages in Chapter 7.)
-	 *
-	 * headline
-	 * Headline messages usually are not stored offline, because they are temporal in nature. In addition, XMPP servers often send a message of type headline to all of the online devices associated with an account (at least those with non-negative <priority/> values).
-	 *
-	 * error
-	 * A message of type error is sent in response to a previously sent message, to indicate that a problem occurred in relation to the earlier message (the recipient does not exist, message delivery is not possible at the moment, etc.).
+	 * Sends a chat type message
+	 * @param {*} to user jid
+	 * @param {*} body message body
 	 */
 	async sendMessage(to, body) {
 		logger.debug(`sending message to ${to} : ${body}`);
@@ -667,6 +638,11 @@ class NvcsXmppClient {
 		await this.xmpp.send(msg);
 	}
 
+	/**
+	 * Send bordcast message
+	 * @param {JIDs} recipients JIDs
+	 * @param {*} body message body
+	 */
 	async sendMessageMany(recipients, body) {
 		const stanzas = recipients.map((address) =>
 			xml('message', { to: address, type: 'chat' }, xml('body', null, body)),
@@ -680,4 +656,5 @@ class NvcsXmppClient {
 	}
 }
 
-module.exports = NvcsXmppClient;
+module.exports.eventList = eventList;
+module.exports.client = NvcsXmppClient;
