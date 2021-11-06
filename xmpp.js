@@ -37,7 +37,7 @@ const logger = pino({
 
 const eventEmitter = new events.EventEmitter();
 
-var STATUS = {
+const STATUS = {
 	AWAY: 'away',
 	DND: 'busy',
 	XA: 'away for long',
@@ -75,15 +75,7 @@ function bareJID(jid) {
 
 class NvcsXmppClient {
 	// publicField
-	eventList = {
-		CONTACT_STATUS_CHANGED: 'CONTACT_STATUS_CHANGED',
-		VOICECALL: 'VOICECALL',
-		VIDEOCALL: 'VIDEOCALL',
-		KEYEXCHANGE: 'KEYEXCHANGE',
-		PING: 'PING',
-		ONLINE: 'online',
-		OFFLINE: 'offline',
-	};
+
 	// privateField
 
 	#service;
@@ -140,6 +132,16 @@ class NvcsXmppClient {
 			}
 		});
 	}
+
+	eventList = {
+		CONTACT_STATUS_CHANGED: 'CONTACT_STATUS_CHANGED',
+		VOICECALL: 'VOICECALL',
+		VIDEOCALL: 'VIDEOCALL',
+		KEYEXCHANGE: 'KEYEXCHANGE',
+		PING: 'PING',
+		ONLINE: 'online',
+		OFFLINE: 'offline',
+	};
 
 	async iqHandel(stanza) {
 		logger.warn(`received iq from ${stanza.attrs.from}`);
@@ -222,10 +224,11 @@ class NvcsXmppClient {
 	 */
 	async messageHandle(stanza) {
 		const { from } = stanza.attrs;
+		// logger.warn(stanza.toString());
 
 		if (!stanza.getChild('body')) {
 			logger.debug(`[${from}] is change chat state`);
-			// logger.warn(stanza.toString());
+
 			/** TODO: Dealing with Chat State Notifications XEP-0085
 			 *  Chat states describe your involvement with a conversation, which can be one of the following:
 			 *	Starting
@@ -250,24 +253,33 @@ class NvcsXmppClient {
 		}
 
 		const messageText = stanza.getChild('body').text();
-
-		switch (messageText) {
-			case this.eventList.PING:
-				await this.sendMessage(from, 'ping');
-				break;
-			case this.eventList.VIDEOCALL:
-				eventEmitter.emit(this.eventList.VIDEOCALL, messageText);
-				break;
-			case this.eventList.VOICECALL:
-				eventEmitter.emit(this.eventList.VOICECALL);
-				break;
-			case this.eventList.KEYEXCHANGE:
-				eventEmitter.emit(this.eventList.KEYEXCHANGE);
-				break;
-			default:
-				logger.info(`[${from}]: "${messageText}"`);
-				break;
+		// We are using subject element as message type
+		if (stanza.getChild('subject')) {
+			const subject = stanza.getChild('subject').text();
+			switch (subject) {
+				case this.eventList.PING:
+					await this.sendMessage(from, 'ping');
+					break;
+				case this.eventList.VIDEOCALL:
+					eventEmitter.emit(this.eventList.VIDEOCALL, JSON.parse(messageText));
+					break;
+				case this.eventList.VOICECALL:
+					eventEmitter.emit(this.eventList.VOICECALL, JSON.parse(messageText));
+					break;
+				case this.eventList.KEYEXCHANGE:
+					eventEmitter.emit(
+						this.eventList.KEYEXCHANGE,
+						JSON.parse(messageText),
+					);
+					break;
+				default:
+					logger.info(`[${from}]: unknown subject type "${subject}"`);
+					break;
+			}
+			return;
 		}
+
+		logger.info(`[chat][${from}]: "${messageText}"`);
 	}
 
 	addEventListener(eventName, callback) {
@@ -610,6 +622,24 @@ class NvcsXmppClient {
 
 	/*********** Message Section  ***********/
 
+	async SendInvite(to, type, body) {
+		// let invType = this.eventList.type;
+
+		// if (!invType) {
+		// 	throw new Error('type is not defined ' + type);
+		// }
+
+		body = JSON.stringify(body);
+		logger.debug(`sending an invitation to ${to} : ${body}`);
+
+		const msg = xml(
+			'message',
+			{ type: 'chat', to: to },
+			xml('subject', {}, type),
+			xml('body', {}, body),
+		);
+		await this.xmpp.send(msg);
+	}
 	/**
 	 * Sends a chat message
 	 * @param {*} to
